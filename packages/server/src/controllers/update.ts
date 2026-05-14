@@ -74,9 +74,12 @@ function spawnRestart(port: string) {
 }
 
 export async function handleUpdate(ctx: any) {
-  try {
-    const output = runUpdateInstall()
-
+  ctx.status = 403
+  ctx.body = {
+    success: false,
+    message: 'Auto update is disabled for this custom build',
+  }
+}
     ctx.body = {
       success: true,
       message: output.trim() || 'hermes-web-ui updated successfully',
