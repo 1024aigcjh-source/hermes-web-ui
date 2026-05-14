@@ -426,25 +426,8 @@ Options:
 }
 
 function doUpdate() {
-  console.log('  ⬆ Updating hermes-web-ui...')
-
-  const child = spawnCli(getNpmBin(), ['install', '-g', 'hermes-web-ui@latest'], {
-    stdio: 'inherit',
-    windowsHide: true,
-  })
-
-  child.on('exit', (code) => {
-    if (code === 0) {
-      console.log('  ✓ Update complete, restarting...')
-      const restart = spawnCli(getCliBin(), ['restart', '--port', String(getUpdatePort())], {
-        stdio: 'inherit',
-        windowsHide: true,
-      })
-      restart.on('exit', (restartCode) => process.exit(restartCode ?? 1))
-    } else {
-      console.log('  ✗ Update failed')
-    }
-  })
+  console.log('  ✗ Auto update is disabled for this custom build')
+  process.exit(1)
 }
 
 switch (command) {
