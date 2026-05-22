@@ -1,5 +1,5 @@
 import { io, type Socket } from 'socket.io-client'
-import { request, getBaseUrlValue, getApiKey } from '../client'
+import { getBaseUrlValue, getApiKey } from '../client'
 
 export type ContentBlock =
   | { type: 'text'; text: string }
@@ -16,6 +16,8 @@ export interface StartRunRequest {
   instructions?: string
   session_id?: string
   model?: string
+  provider?: string
+  model_groups?: Array<{ provider: string; models: string[] }>
   queue_id?: string
   source?: 'api_server' | 'cli'
 }
@@ -77,6 +79,7 @@ const sessionEventHandlers = new Map<string, {
   onAbortStarted: (event: RunEvent) => void
   onAbortCompleted: (event: RunEvent) => void
   onUsageUpdated: (event: RunEvent) => void
+  onSessionCommand?: (event: RunEvent) => void
   onRunQueued?: (event: RunEvent) => void
   onApprovalRequested?: (event: RunEvent) => void
   onApprovalResolved?: (event: RunEvent) => void
@@ -291,6 +294,16 @@ function globalUsageUpdatedHandler(event: RunEvent): void {
   }
 }
 
+function globalSessionCommandHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onSessionCommand) {
+    handlers.onSessionCommand(event)
+  }
+}
+
 function globalApprovalRequestedHandler(event: RunEvent): void {
   const sid = event.session_id
   if (!sid) return
@@ -334,6 +347,7 @@ export function registerSessionHandlers(
     onAbortStarted: (event: RunEvent) => void
     onAbortCompleted: (event: RunEvent) => void
     onUsageUpdated: (event: RunEvent) => void
+    onSessionCommand?: (event: RunEvent) => void
     onRunQueued?: (event: RunEvent) => void
     onApprovalRequested?: (event: RunEvent) => void
     onApprovalResolved?: (event: RunEvent) => void
@@ -436,6 +450,7 @@ export function connectChatRun(): Socket {
 
     // Usage events
     chatRunSocket.on('usage.updated', globalUsageUpdatedHandler)
+    chatRunSocket.on('session.command', globalSessionCommandHandler)
 
     globalListenersRegistered = true
   }
@@ -452,6 +467,18 @@ export function disconnectChatRun(): void {
   }
 }
 
+function removeSocketListener(socket: Socket, event: string, handler: (...args: any[]) => void): void {
+  const candidate = socket as Socket & {
+    off?: (event: string, handler: (...args: any[]) => void) => Socket
+    removeListener?: (event: string, handler: (...args: any[]) => void) => Socket
+  }
+  if (typeof candidate.off === 'function') {
+    candidate.off(event, handler)
+    return
+  }
+  candidate.removeListener?.(event, handler)
+}
+
 /**
  * Start a chat run via Socket.IO and stream events back.
  * Returns an AbortController-compatible handle for cancellation.
@@ -461,7 +488,7 @@ export function disconnectChatRun(): void {
  */
 export function resumeSession(
   sessionId: string,
-  onResumed: (data: { session_id: string; messages: any[]; isWorking: boolean; isAborting?: boolean; events: any[]; inputTokens?: number; outputTokens?: number; queueLength?: number }) => void,
+  onResumed: (data: { session_id: string; messages: any[]; isWorking: boolean; isAborting?: boolean; events: any[]; inputTokens?: number; outputTokens?: number; contextTokens?: number; queueLength?: number }) => void,
 ): Socket {
   const socket = connectChatRun()
 
@@ -485,6 +512,23 @@ export function startRunViaSocket(
 
   let closed = false
   const socket = connectChatRun()
+  const handleSocketError = (err: Error) => {
+    if (closed) return
+    closed = true
+    sessionEventHandlers.delete(sid)
+    onError(err)
+  }
+  socket.once('connect_error', handleSocketError)
+  const handleSocketDisconnect = (reason: string) => {
+    if (closed || reason === 'io client disconnect') return
+    handleSocketError(new Error(`Socket disconnected: ${reason}`))
+  }
+  socket.once('disconnect', handleSocketDisconnect)
+
+  const removeTerminalSocketListeners = () => {
+    removeSocketListener(socket, 'connect_error', handleSocketError)
+    removeSocketListener(socket, 'disconnect', handleSocketDisconnect)
+  }
 
   if (sessionEventHandlers.has(sid)) {
     socket.emit('run', body)
@@ -533,6 +577,7 @@ export function startRunViaSocket(
       onEvent(evt)
       if ((evt as any).queue_remaining > 0) return
       closed = true
+      removeTerminalSocketListeners()
       onDone()
     },
     onRunFailed: (evt: RunEvent) => {
@@ -540,7 +585,8 @@ export function startRunViaSocket(
       onEvent(evt)
       if ((evt as any).queue_remaining > 0) return
       closed = true
-      onError(new Error(evt.error || 'Run failed'))
+      removeTerminalSocketListeners()
+      onDone()
     },
     onCompressionStarted: (evt: RunEvent) => {
       if (closed) return
@@ -559,11 +605,21 @@ export function startRunViaSocket(
       onEvent(evt)
       if ((evt as any).queue_length > 0) return
       closed = true
+      removeTerminalSocketListeners()
       onDone()
     },
     onUsageUpdated: (evt: RunEvent) => {
       if (closed) return
       onEvent(evt)
+    },
+    onSessionCommand: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+      if ((evt as any).terminal === false) return
+      closed = true
+      removeTerminalSocketListeners()
+      sessionEventHandlers.delete(sid)
+      onDone()
     },
     onRunQueued: (evt: RunEvent) => {
       if (closed) return
@@ -592,8 +648,4 @@ export function startRunViaSocket(
       }
     },
   }
-}
-
-export async function fetchModels(): Promise<{ data: Array<{ id: string }> }> {
-  return request('/api/hermes/v1/models')
 }

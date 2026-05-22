@@ -1,4 +1,5 @@
 import { getActiveProfileDir, getProfileDir } from '../../services/hermes/hermes-profile'
+import { join } from 'path'
 import type { LocalUsageStats } from './usage-store'
 
 const SQLITE_AVAILABLE = (() => {
@@ -66,7 +67,7 @@ interface HermesSessionInternalRow extends HermesSessionRow {
 }
 
 function sessionDbPath(): string {
-  return `${getActiveProfileDir()}/state.db`
+  return join(getActiveProfileDir(), 'state.db')
 }
 
 function normalizeNumber(value: unknown, fallback = 0): number {
@@ -86,18 +87,19 @@ function normalizeNullableString(value: unknown): string | null {
   return String(value)
 }
 
+function titleFromPreview(preview: string): string | null {
+  if (!preview) return null
+  return preview.length > 40 ? `${preview.slice(0, 40)}...` : preview
+}
+
 function mapRow(row: Record<string, unknown>): HermesSessionRow {
   const startedAt = normalizeNumber(row.started_at)
-  const rawTitle = normalizeNullableString(row.title)
-  const preview = String(row.preview || '')
-  // Fallback: when no explicit title, use first user message as title (same as CLI path)
-  const title = rawTitle || (preview ? (preview.length > 40 ? preview.slice(0, 40) + '...' : preview) : null)
   return {
     id: String(row.id || ''),
     source: String(row.source || ''),
     user_id: normalizeNullableString(row.user_id),
     model: String(row.model || ''),
-    title,
+    title: normalizeNullableString(row.title),
     started_at: startedAt,
     ended_at: normalizeNullableNumber(row.ended_at),
     end_reason: normalizeNullableString(row.end_reason),
@@ -373,12 +375,13 @@ function latestSessionInChain(chain: HermesSessionInternalRow[]): HermesSessionI
 
 function projectSessionSummary(root: HermesSessionInternalRow, chain: HermesSessionInternalRow[]): HermesSessionRow {
   const latest = latestSessionInChain(chain)
+  const firstPreview = chain.map(session => session.preview).find(Boolean) || root.preview
   const { parent_session_id: _parentSessionId, ...rootRow } = root
   return {
     ...rootRow,
     id: latest.id,
     model: latest.model || root.model,
-    title: latest.title || root.title,
+    title: latest.title || root.title || titleFromPreview(firstPreview),
     ended_at: latest.ended_at,
     end_reason: latest.end_reason,
     message_count: latest.message_count,
@@ -392,7 +395,7 @@ function projectSessionSummary(root: HermesSessionInternalRow, chain: HermesSess
     estimated_cost_usd: latest.estimated_cost_usd,
     actual_cost_usd: latest.actual_cost_usd,
     cost_status: latest.cost_status,
-    preview: latest.preview || root.preview,
+    preview: latest.preview || root.preview || firstPreview || '',
     last_active: latest.last_active || root.last_active,
   }
 }
@@ -543,7 +546,7 @@ function aggregateSessionDetail(
     ...rootRow,
     id: requestedSessionId,
     source: latest.source || root.source,
-    title: latest.title || root.title || (firstPreview ? (firstPreview.length > 40 ? `${firstPreview.slice(0, 40)}...` : firstPreview) : null),
+    title: latest.title || root.title || titleFromPreview(firstPreview),
     preview: latest.preview || root.preview || firstPreview || '',
     model: latest.model || root.model,
     ended_at: latest.ended_at,
@@ -641,7 +644,7 @@ export async function getSessionDetailFromDb(sessionId: string): Promise<HermesS
 
 export async function getSessionDetailFromDbWithProfile(sessionId: string, profile: string): Promise<HermesSessionDetailRow | null> {
   const { DatabaseSync } = await import('node:sqlite')
-  const dbPath = `${getProfileDir(profile)}/state.db`
+  const dbPath = join(getProfileDir(profile), 'state.db')
   const db = new DatabaseSync(dbPath, { open: true, readOnly: true })
   try {
     const idx = loadAllSessions(db)
@@ -668,7 +671,7 @@ export async function getSessionDetailFromDbWithProfile(sessionId: string, profi
 
 export async function getExactSessionDetailFromDbWithProfile(sessionId: string, profile: string): Promise<HermesSessionDetailRow | null> {
   const { DatabaseSync } = await import('node:sqlite')
-  const dbPath = `${getProfileDir(profile)}/state.db`
+  const dbPath = join(getProfileDir(profile), 'state.db')
   const db = new DatabaseSync(dbPath, { open: true, readOnly: true })
   try {
     const idx = loadAllSessions(db)
@@ -700,7 +703,7 @@ export async function findLatestExactSessionIdWithProfile(
   if (!trimmed) return null
 
   const { DatabaseSync } = await import('node:sqlite')
-  const dbPath = `${getProfileDir(profile)}/state.db`
+  const dbPath = join(getProfileDir(profile), 'state.db')
   const db = new DatabaseSync(dbPath, { open: true, readOnly: true })
   const loweredQuery = trimmed.toLowerCase()
   const likePattern = buildLikePattern(loweredQuery)
@@ -1210,7 +1213,7 @@ export async function listSessionSummaries(source?: string, limit = 2000, profil
   }
 
   const { DatabaseSync } = await import('node:sqlite')
-  const dbPath = profile ? `${getProfileDir(profile)}/state.db` : sessionDbPath()
+  const dbPath = profile ? join(getProfileDir(profile), 'state.db') : sessionDbPath()
   const db = new DatabaseSync(dbPath, { open: true, readOnly: true })
 
   try {
@@ -1257,7 +1260,7 @@ export async function searchSessionSummariesWithProfile(
   if (!trimmed) return []
 
   const { DatabaseSync } = await import('node:sqlite')
-  const dbPath = `${getProfileDir(profile)}/state.db`
+  const dbPath = join(getProfileDir(profile), 'state.db')
   const db = new DatabaseSync(dbPath, { open: true, readOnly: true })
   const normalized = sanitizeFtsQuery(trimmed)
   const prefixQuery = toPrefixQuery(normalized)
