@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { NButton, NModal, useMessage } from "naive-ui";
+import { NButton, NModal } from "naive-ui";
 import { useAppStore } from "@/stores/hermes/app";
 import ModelSelector from "./ModelSelector.vue";
 import ProfileSelector from "./ProfileSelector.vue";
@@ -15,7 +15,6 @@ import { changelog } from "@/data/changelog";
 import { isStoredSuperAdmin } from "@/api/client";
 
 const { t } = useI18n();
-const message = useMessage();
 const route = useRoute();
 const router = useRouter();
 const appStore = useAppStore();

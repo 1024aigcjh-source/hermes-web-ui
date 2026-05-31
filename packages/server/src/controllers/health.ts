@@ -61,33 +61,11 @@ function isUpdateCheckDisabled(): boolean {
 }
 
 export async function checkLatestVersion(): Promise<void> {
-<<<<<<< HEAD
   cachedLatestVersion = ''
 }
 
 export function startVersionCheck(): void {
   // Auto update checks are disabled for forked/custom builds.
-=======
-  if (isUpdateCheckDisabled()) return
-  try {
-    const packageName = PACKAGE_INFO?.name || 'hermes-web-ui'
-    const registryName = encodeURIComponent(packageName)
-    const res = await fetch(`https://registry.npmjs.org/${registryName}/latest`, { signal: AbortSignal.timeout(10000) })
-    if (res.ok) {
-      const data = await res.json() as { version: string }
-      cachedLatestVersion = data.version
-      if (LOCAL_VERSION && cachedLatestVersion !== LOCAL_VERSION) {
-        console.log(`Update available: ${LOCAL_VERSION} → ${cachedLatestVersion}`)
-      }
-    }
-  } catch { /* ignore */ }
-}
-
-export function startVersionCheck(): void {
-  if (isUpdateCheckDisabled()) return
-  setTimeout(checkLatestVersion, 5000)
-  setInterval(checkLatestVersion, 30 * 60 * 1000)
->>>>>>> pr/1177
 }
 
 export async function healthCheck(ctx: any) {
@@ -99,15 +77,8 @@ export async function healthCheck(ctx: any) {
     version: hermesVersion,
     gateway: 'running',
     webui_version: LOCAL_VERSION,
-<<<<<<< HEAD
     webui_latest: cachedLatestVersion,
     webui_update_available: false,
-=======
-    webui_latest: isUpdateCheckDisabled() ? '' : cachedLatestVersion,
-    webui_update_available: isUpdateCheckDisabled()
-      ? false
-      : Boolean(LOCAL_VERSION && cachedLatestVersion && cachedLatestVersion !== LOCAL_VERSION),
->>>>>>> pr/1177
     node_version: process.versions.node,
   }
 }
