@@ -32,6 +32,80 @@ async function runBridgeProbe(script: string): Promise<any> {
   return JSON.parse(stdout)
 }
 
+describe('agent bridge JSON encoding', () => {
+  it('replaces lone surrogate characters before bridge socket writes', async () => {
+    const result = await runBridgeProbe(String.raw`
+import importlib.util
+import json
+import os
+import sys
+
+spec = importlib.util.spec_from_file_location("hermes_bridge", os.environ["BRIDGE_PATH"])
+bridge = importlib.util.module_from_spec(spec)
+sys.modules["hermes_bridge"] = bridge
+spec.loader.exec_module(bridge)
+
+class FakeSocket:
+    def __init__(self):
+        self.sent = []
+        self.closed = False
+        self._read = False
+
+    def sendall(self, payload):
+        self.sent.append(payload)
+
+    def recv(self, size):
+        if self._read:
+            return b""
+        self._read = True
+        return b'{"ok":true}\n'
+
+    def close(self):
+        self.closed = True
+
+class FakeConn:
+    def __init__(self):
+        self.sent = b""
+
+    def sendall(self, payload):
+        self.sent += payload
+
+fake_socket = FakeSocket()
+bridge._connect_bridge_socket = lambda endpoint, timeout: fake_socket
+bridge._send_bridge_request("tcp://127.0.0.1:1", {
+    "message": "request-\ud800",
+    "items": ["nested-\udfff"],
+}, 1)
+
+fake_conn = FakeConn()
+bridge._write_json_response(fake_conn, {
+    "ok": True,
+    "message": "response-\udc00",
+    "nested": {"key-\ud800": "value-\udfff"},
+})
+
+print(json.dumps({
+    "request": json.loads(fake_socket.sent[0].decode("utf-8")),
+    "response": json.loads(fake_conn.sent.decode("utf-8")),
+    "closed": fake_socket.closed,
+}))
+`)
+
+    expect(result).toEqual({
+      request: {
+        message: 'request-\uFFFD',
+        items: ['nested-\uFFFD'],
+      },
+      response: {
+        ok: true,
+        message: 'response-\uFFFD',
+        nested: { 'key-\uFFFD': 'value-\uFFFD' },
+      },
+      closed: true,
+    })
+  })
+})
+
 describe('agent bridge profile environment', () => {
   it('runs agent calls with the requested profile HERMES_HOME and restores the bridge home', async () => {
     const profileHome = join(tempDir, 'profiles', 'work')
@@ -232,6 +306,86 @@ print(json.dumps({
       },
       restored_openai: 'shell-openai',
       restored_glm: 'shell-glm',
+    })
+  })
+
+  it('discovers MCP tools in the active profile before creating an agent', async () => {
+    const profileHome = join(tempDir, 'profiles', 'work')
+    await mkdir(profileHome, { recursive: true })
+    await writeFile(join(profileHome, 'config.yaml'), 'model:\n  default: work-model\n', 'utf-8')
+    const expectedProfileHome = await realpath(profileHome)
+
+    const result = await runBridgeProbe(`
+import importlib.util
+import json
+import os
+import sys
+import types
+
+spec = importlib.util.spec_from_file_location("hermes_bridge", os.environ["BRIDGE_PATH"])
+bridge = importlib.util.module_from_spec(spec)
+sys.modules["hermes_bridge"] = bridge
+spec.loader.exec_module(bridge)
+
+root = os.environ["TEST_HERMES_HOME"]
+os.environ["HERMES_HOME"] = root
+os.environ["HERMES_AGENT_BRIDGE_BASE_HOME"] = root
+
+events = []
+
+tools_pkg = types.ModuleType("tools")
+tools_pkg.__path__ = []
+sys.modules["tools"] = tools_pkg
+
+mcp_tool = types.ModuleType("tools.mcp_tool")
+def discover_mcp_tools():
+    events.append({"event": "discover", "home": os.environ.get("HERMES_HOME")})
+    return ["mcp_anysearch_search"]
+mcp_tool.discover_mcp_tools = discover_mcp_tools
+sys.modules["tools.mcp_tool"] = mcp_tool
+
+run_agent = types.ModuleType("run_agent")
+class FakeAgent:
+    def __init__(self, **kwargs):
+        events.append({
+            "event": "agent",
+            "home": os.environ.get("HERMES_HOME"),
+            "enabled_toolsets": kwargs.get("enabled_toolsets"),
+        })
+        self.tools = []
+run_agent.AIAgent = FakeAgent
+sys.modules["run_agent"] = run_agent
+
+class FakeDbHolder:
+    error = None
+    def get_for_profile(self, profile):
+        return None
+
+bridge._ensure_agent_imports = lambda: None
+bridge._load_cfg = lambda: {"model": {"default": "work-model"}, "agent": {}}
+bridge._resolve_runtime = lambda model, provider=None: {"provider": "fake"}
+bridge._load_enabled_toolsets = lambda: ["mcp-anysearch"]
+bridge._load_reasoning_config = lambda: None
+bridge._load_service_tier = lambda: None
+
+pool = bridge.AgentPool()
+pool._db = FakeDbHolder()
+session = pool.get_or_create("session-1", profile="work")
+
+print(json.dumps({
+    "events": events,
+    "mcp_tool_count": session.config.get("mcp_tool_count"),
+    "restored_home": os.environ.get("HERMES_HOME"),
+}))
+`)
+
+    expect(result).toEqual({
+      events: [
+        { event: 'discover', home: expectedProfileHome },
+        { event: 'agent', home: expectedProfileHome, enabled_toolsets: ['mcp-anysearch'] },
+      ],
+      mcp_tool_count: 1,
+      restored_home: tempDir,
     })
   })
 
